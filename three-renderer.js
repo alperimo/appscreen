@@ -859,6 +859,120 @@ function renderThreeJSForScreenshot(targetCanvas, width, height, screenshotIndex
     }
 }
 
+// Render a single 3D device for collage mode with a specific image and position settings
+function renderThreeJSCollageDevice(targetCanvas, width, height, screenshotImage, deviceSettings) {
+    if (!threeRenderer || !threeScene || !threeCamera) return;
+
+    const deviceType = deviceSettings.device3D || 'iphone';
+    const config = deviceConfigs[deviceType] || deviceConfigs.iphone;
+    const dims = { width: width || 1290, height: height || 2796 };
+
+    // Determine which pivot/screenPlane to use
+    const useCurrentModel = deviceType === currentDeviceModel && phonePivot;
+    let pivotToUse, screenPlaneToUse;
+
+    if (useCurrentModel) {
+        pivotToUse = phonePivot;
+        screenPlaneToUse = customScreenPlane;
+    } else {
+        const cached = phoneModelCache[deviceType];
+        if (!cached?.loaded) {
+            loadCachedPhoneModel(deviceType).then(() => {
+                if (typeof updateCanvas === 'function') updateCanvas();
+            });
+            return;
+        }
+        pivotToUse = cached.pivot;
+        screenPlaneToUse = cached.screenPlane;
+        threeScene.add(pivotToUse);
+    }
+
+    // Store originals
+    const originalBackground = threeScene.background;
+    const originalPosition = pivotToUse.position.clone();
+    const originalScale = pivotToUse.scale.clone();
+    const originalRotation = pivotToUse.rotation.clone();
+
+    if (!useCurrentModel && phonePivot) {
+        phonePivot.visible = false;
+    }
+
+    // Apply screen texture
+    const oldMaterial = screenPlaneToUse ? screenPlaneToUse.material : null;
+    if (screenshotImage && screenPlaneToUse) {
+        const cornerRadius = Math.round(screenshotImage.width * config.cornerRadiusFactor);
+        const roundedImage = createRoundedScreenImage(screenshotImage, cornerRadius);
+        const newTexture = new THREE.Texture(roundedImage);
+        newTexture.needsUpdate = true;
+        newTexture.encoding = THREE.sRGBEncoding;
+        newTexture.flipY = true;
+        screenPlaneToUse.material = new THREE.MeshBasicMaterial({
+            map: newTexture,
+            side: THREE.FrontSide,
+            transparent: true
+        });
+    }
+
+    // Apply rotation
+    const rotation3D = deviceSettings.rotation3D || { x: 0, y: 0, z: 0 };
+    const modelRot = config.modelRotation || { x: 0, y: 0, z: 0 };
+    pivotToUse.rotation.set(
+        (rotation3D.x + modelRot.x) * Math.PI / 180,
+        (rotation3D.y + modelRot.y) * Math.PI / 180,
+        (rotation3D.z + modelRot.z) * Math.PI / 180
+    );
+
+    // Apply scale and position
+    const screenshotScale = deviceSettings.scale / 100;
+    pivotToUse.scale.setScalar(screenshotScale);
+    const availableSpaceY = (1 - screenshotScale) * 2;
+    const availableSpaceX = (1 - screenshotScale) * 0.9;
+    const xOffset = ((deviceSettings.x - 50) / 50) * availableSpaceX;
+    const yOffset = -(((deviceSettings.y || 50) - 50) / 50) * availableSpaceY;
+    pivotToUse.position.set(
+        xOffset + basePositionOffset.x,
+        yOffset + basePositionOffset.y,
+        basePositionOffset.z
+    );
+
+    // Render with transparency
+    threeScene.background = null;
+    threeRenderer.setClearColor(0x000000, 0);
+
+    const oldSize = { width: 400, height: 700 };
+    threeRenderer.setSize(dims.width, dims.height);
+    threeCamera.aspect = dims.width / dims.height;
+    threeCamera.updateProjectionMatrix();
+    threeRenderer.clear();
+    threeRenderer.render(threeScene, threeCamera);
+
+    // Composite onto target canvas
+    const ctx = targetCanvas.getContext('2d');
+    ctx.drawImage(threeRenderer.domElement, 0, 0, dims.width, dims.height);
+
+    // Restore
+    threeRenderer.setSize(oldSize.width, oldSize.height);
+    threeCamera.aspect = oldSize.width / oldSize.height;
+    threeCamera.updateProjectionMatrix();
+    threeScene.background = originalBackground;
+    pivotToUse.position.copy(originalPosition);
+    pivotToUse.scale.copy(originalScale);
+    pivotToUse.rotation.copy(originalRotation);
+
+    if (oldMaterial && screenPlaneToUse) {
+        if (screenPlaneToUse.material !== oldMaterial) {
+            screenPlaneToUse.material.map?.dispose();
+            screenPlaneToUse.material.dispose();
+        }
+        screenPlaneToUse.material = oldMaterial;
+    }
+
+    if (!useCurrentModel) {
+        threeScene.remove(pivotToUse);
+        if (phonePivot) phonePivot.visible = true;
+    }
+}
+
 // Show/hide Three.js container
 function showThreeJS(show) {
     const container = document.getElementById('threejs-container');

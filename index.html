@@ -491,6 +491,73 @@
                     </div>
                 </div>
 
+                <!-- Collage Mode -->
+                <div class="divider"></div>
+                <div class="control-group">
+                    <div class="toggle-row">
+                        <span class="toggle-label">Collage Mode</span>
+                        <div class="toggle" id="collage-toggle"></div>
+                    </div>
+                </div>
+
+                <div id="collage-options" style="display: none;">
+                    <div class="control-group">
+                        <label class="control-label">Layout</label>
+                        <div class="collage-layouts">
+                            <button class="collage-layout-btn" data-layout="duo" title="2 Devices Side by Side">
+                                <svg viewBox="0 0 40 40" fill="none" stroke="currentColor" stroke-width="1.5">
+                                    <rect x="4" y="8" width="14" height="24" rx="2" transform="rotate(-5 11 20)"/>
+                                    <rect x="22" y="8" width="14" height="24" rx="2" transform="rotate(5 29 20)"/>
+                                </svg>
+                                <span>Duo</span>
+                            </button>
+                            <button class="collage-layout-btn" data-layout="trio-fan" title="3 Devices Fan">
+                                <svg viewBox="0 0 40 40" fill="none" stroke="currentColor" stroke-width="1.5">
+                                    <rect x="2" y="10" width="12" height="20" rx="1.5" transform="rotate(-10 8 20)"/>
+                                    <rect x="14" y="8" width="12" height="24" rx="1.5"/>
+                                    <rect x="26" y="10" width="12" height="20" rx="1.5" transform="rotate(10 32 20)"/>
+                                </svg>
+                                <span>Trio</span>
+                            </button>
+                            <button class="collage-layout-btn" data-layout="quad-grid" title="4 Devices Grid">
+                                <svg viewBox="0 0 40 40" fill="none" stroke="currentColor" stroke-width="1.5">
+                                    <rect x="3" y="3" width="15" height="15" rx="1.5" transform="rotate(-3 10 10)"/>
+                                    <rect x="22" y="3" width="15" height="15" rx="1.5" transform="rotate(3 29 10)"/>
+                                    <rect x="3" y="22" width="15" height="15" rx="1.5" transform="rotate(-3 10 29)"/>
+                                    <rect x="22" y="22" width="15" height="15" rx="1.5" transform="rotate(3 29 29)"/>
+                                </svg>
+                                <span>Quad</span>
+                            </button>
+                            <button class="collage-layout-btn" data-layout="showcase" title="One Front, Two Back">
+                                <svg viewBox="0 0 40 40" fill="none" stroke="currentColor" stroke-width="1.5">
+                                    <rect x="2" y="12" width="10" height="18" rx="1.5" transform="rotate(-8 7 21)"/>
+                                    <rect x="13" y="6" width="14" height="28" rx="2"/>
+                                    <rect x="28" y="12" width="10" height="18" rx="1.5" transform="rotate(8 33 21)"/>
+                                </svg>
+                                <span>Showcase</span>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="control-group">
+                        <label class="control-label">Devices</label>
+                        <div class="collage-device-list" id="collage-device-list"></div>
+                        <button class="collage-add-btn" id="collage-add-btn">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <line x1="12" y1="5" x2="12" y2="19"/>
+                                <line x1="5" y1="12" x2="19" y2="12"/>
+                            </svg>
+                            Add Device Image
+                        </button>
+                        <input type="file" id="collage-file-input" accept="image/*" style="display: none;">
+                    </div>
+                    <div class="tip-box">
+                        <img src="img/info.svg" width="16" height="16" alt="Info">
+                        <div class="tip-content">
+                            <span>Select a device, then use the controls below to position it. Each device can be 2D or 3D independently.</span>
+                        </div>
+                    </div>
+                </div>
+
                 <div id="position-presets-section">
                 <div class="control-group">
                     <div class="preset-dropdown" id="position-preset-dropdown">

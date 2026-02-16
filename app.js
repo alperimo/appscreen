@@ -51,6 +51,11 @@ const state = {
                 color: '#1d1d1f',
                 width: 12,
                 opacity: 100
+            },
+            collage: {
+                enabled: false,
+                selectedDeviceIndex: 0,
+                devices: []
             }
         },
         text: {
@@ -97,7 +102,27 @@ function getBackground() {
 
 function getScreenshotSettings() {
     const screenshot = getCurrentScreenshot();
-    return screenshot ? screenshot.screenshot : state.defaults.screenshot;
+    if (!screenshot) return state.defaults.screenshot;
+    const ss = screenshot.screenshot;
+    const collage = ss.collage;
+    if (collage?.enabled && collage.devices.length > 0) {
+        const device = collage.devices[collage.selectedDeviceIndex || 0];
+        return {
+            ...ss,
+            scale: device.scale,
+            x: device.x,
+            y: device.y,
+            rotation: device.rotation,
+            perspective: device.perspective,
+            cornerRadius: device.cornerRadius,
+            shadow: device.shadow,
+            frame: device.frame,
+            use3D: device.use3D || false,
+            device3D: device.device3D || 'iphone',
+            rotation3D: device.rotation3D || { x: 0, y: 0, z: 0 }
+        };
+    }
+    return ss;
 }
 
 function getText() {
@@ -129,17 +154,38 @@ function setBackground(key, value) {
 
 function setScreenshotSetting(key, value) {
     const screenshot = getCurrentScreenshot();
-    if (screenshot) {
-        if (key.includes('.')) {
-            const parts = key.split('.');
-            let obj = screenshot.screenshot;
-            for (let i = 0; i < parts.length - 1; i++) {
-                obj = obj[parts[i]];
+    if (!screenshot) return;
+    const ss = screenshot.screenshot;
+    const collage = ss.collage;
+    // Redirect device-level settings to selected collage device
+    if (collage?.enabled && collage.devices.length > 0) {
+        const deviceKeys = ['scale', 'x', 'y', 'rotation', 'perspective', 'cornerRadius', 'shadow', 'frame', 'use3D', 'device3D', 'rotation3D'];
+        const topKey = key.split('.')[0];
+        if (deviceKeys.includes(topKey)) {
+            const device = collage.devices[collage.selectedDeviceIndex || 0];
+            if (key.includes('.')) {
+                const parts = key.split('.');
+                let obj = device;
+                for (let i = 0; i < parts.length - 1; i++) {
+                    if (!obj[parts[i]]) obj[parts[i]] = {};
+                    obj = obj[parts[i]];
+                }
+                obj[parts[parts.length - 1]] = value;
+            } else {
+                device[key] = value;
             }
-            obj[parts[parts.length - 1]] = value;
-        } else {
-            screenshot.screenshot[key] = value;
+            return;
         }
+    }
+    if (key.includes('.')) {
+        const parts = key.split('.');
+        let obj = ss;
+        for (let i = 0; i < parts.length - 1; i++) {
+            obj = obj[parts[i]];
+        }
+        obj[parts[parts.length - 1]] = value;
+    } else {
+        ss[key] = value;
     }
 }
 
@@ -1029,13 +1075,34 @@ function saveState() {
             });
         }
 
+        // Serialize screenshot settings, stripping Image objects from collage devices
+        let screenshotSettings = s.screenshot;
+        if (s.screenshot?.collage?.devices?.length > 0) {
+            screenshotSettings = { ...s.screenshot, collage: { ...s.screenshot.collage } };
+            screenshotSettings.collage.devices = s.screenshot.collage.devices.map(d => ({
+                src: d.src || '',
+                name: d.name || '',
+                scale: d.scale,
+                x: d.x,
+                y: d.y,
+                rotation: d.rotation,
+                perspective: d.perspective,
+                cornerRadius: d.cornerRadius,
+                shadow: d.shadow,
+                frame: d.frame,
+                use3D: d.use3D || false,
+                device3D: d.device3D || 'iphone',
+                rotation3D: d.rotation3D || { x: 0, y: 0, z: 0 }
+            }));
+        }
+
         return {
             src: s.image?.src || '', // Legacy compatibility
             name: s.name,
             deviceType: s.deviceType,
             localizedImages: localizedImages,
             background: s.background,
-            screenshot: s.screenshot,
+            screenshot: screenshotSettings,
             text: s.text,
             overrides: s.overrides
         };
@@ -1236,14 +1303,17 @@ function loadState() {
 
                         function checkAllLoaded() {
                             if (loadedCount === totalToLoad) {
-                                updateScreenshotList();
-                                syncUIWithState();
-                                updateGradientStopsUI();
-                                updateCanvas();
+                                // Reconstruct collage device Image objects
+                                reconstructCollageImages().then(() => {
+                                    updateScreenshotList();
+                                    syncUIWithState();
+                                    updateGradientStopsUI();
+                                    updateCanvas();
 
-                                if (needsMigration && parsed.screenshots.length > 0) {
-                                    showMigrationPrompt();
-                                }
+                                    if (needsMigration && parsed.screenshots.length > 0) {
+                                        showMigrationPrompt();
+                                    }
+                                });
                             }
                         }
                     } else {
@@ -1359,6 +1429,11 @@ function resetStateToDefaults() {
                 color: '#1d1d1f',
                 width: 12,
                 opacity: 100
+            },
+            collage: {
+                enabled: false,
+                selectedDeviceIndex: 0,
+                devices: []
             }
         },
         text: {
@@ -1718,6 +1793,58 @@ function syncUIWithState() {
     if (use3D && typeof switchPhoneModel === 'function') {
         switchPhoneModel(device3D);
     }
+
+    // Collage mode
+    const screenshot = getCurrentScreenshot();
+    const collage = screenshot?.screenshot?.collage;
+    const collageEnabled = collage?.enabled || false;
+    document.getElementById('collage-toggle').classList.toggle('active', collageEnabled);
+
+    // Show collage options when collage is on
+    const collageOptions = document.getElementById('collage-options');
+    if (collageOptions) {
+        collageOptions.style.display = collageEnabled ? 'block' : 'none';
+    }
+    if (collageEnabled) {
+        // In collage mode, show device type selector for per-device 2D/3D toggle
+        document.getElementById('device-type-selector').style.display = '';
+
+        const selectedDevice = collage.devices[collage.selectedDeviceIndex || 0];
+        const deviceIs3D = selectedDevice?.use3D || false;
+        const deviceModel = selectedDevice?.device3D || 'iphone';
+        const deviceRot = selectedDevice?.rotation3D || { x: 0, y: 0, z: 0 };
+
+        // Update 2D/3D toggle for selected device
+        document.querySelectorAll('#device-type-selector button').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.type === (deviceIs3D ? '3d' : '2d'));
+        });
+        document.querySelectorAll('#device-3d-selector button').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.model === deviceModel);
+        });
+
+        // Show/hide 3D rotation controls based on selected device
+        document.getElementById('rotation-3d-options').style.display = deviceIs3D ? 'block' : 'none';
+        document.getElementById('rotation-3d-x').value = deviceRot.x;
+        document.getElementById('rotation-3d-x-value').textContent = formatValue(deviceRot.x) + '°';
+        document.getElementById('rotation-3d-y').value = deviceRot.y;
+        document.getElementById('rotation-3d-y-value').textContent = formatValue(deviceRot.y) + '°';
+        document.getElementById('rotation-3d-z').value = deviceRot.z;
+        document.getElementById('rotation-3d-z-value').textContent = formatValue(deviceRot.z) + '°';
+
+        // In collage mode, show 2D settings only when selected device is 2D
+        document.getElementById('2d-only-settings').style.display = deviceIs3D ? 'none' : 'block';
+        document.getElementById('position-presets-section').style.display = 'block';
+        document.getElementById('3d-tip').style.display = deviceIs3D ? 'flex' : 'none';
+
+        // Init Three.js if any collage device is 3D
+        const any3D = collage.devices.some(d => d.use3D);
+        if (any3D && typeof showThreeJS === 'function') {
+            showThreeJS(true);
+        }
+    } else {
+        document.getElementById('device-type-selector').style.display = '';
+    }
+    updateCollageDeviceList();
 }
 
 function setupEventListeners() {
@@ -2398,6 +2525,44 @@ function setupEventListeners() {
         updateCanvas();
     });
 
+    // Collage toggle
+    document.getElementById('collage-toggle').addEventListener('click', function () {
+        this.classList.toggle('active');
+        const enabled = this.classList.contains('active');
+        toggleCollage(enabled);
+    });
+
+    // Collage layout buttons
+    document.querySelectorAll('.collage-layout-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            applyCollageLayout(btn.dataset.layout);
+        });
+    });
+
+    // Collage add device button
+    document.getElementById('collage-add-btn').addEventListener('click', () => {
+        document.getElementById('collage-file-input').click();
+    });
+
+    // Collage file input
+    document.getElementById('collage-file-input').addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (!file || !file.type.startsWith('image/')) return;
+
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+            const img = new Image();
+            img.onload = () => {
+                addCollageDevice(img, ev.target.result, file.name);
+            };
+            img.src = ev.target.result;
+        };
+        reader.readAsDataURL(file);
+
+        // Reset input for re-upload
+        e.target.value = '';
+    });
+
     // Shadow toggle
     document.getElementById('shadow-toggle').addEventListener('click', function () {
         this.classList.toggle('active');
@@ -2644,8 +2809,11 @@ function setupEventListeners() {
             document.getElementById('rotation-3d-options').style.display = use3D ? 'block' : 'none';
 
             // Hide 2D-only settings in 3D mode, show 3D tip
+            // In collage mode, always keep position presets visible
+            const collage = getCurrentScreenshot()?.screenshot?.collage;
+            const isCollage = collage?.enabled || false;
             document.getElementById('2d-only-settings').style.display = use3D ? 'none' : 'block';
-            document.getElementById('position-presets-section').style.display = use3D ? 'none' : 'block';
+            document.getElementById('position-presets-section').style.display = (use3D && !isCollage) ? 'none' : 'block';
             document.getElementById('3d-tip').style.display = use3D ? 'flex' : 'none';
 
             if (typeof showThreeJS === 'function') {
@@ -3883,6 +4051,261 @@ function updateTextUI(text) {
     });
 }
 
+// ─── Collage Functions ───────────────────────────────────────────────
+
+const collageLayouts = {
+    'duo': [
+        { scale: 55, x: 28, y: 55, rotation: -5, perspective: 0, cornerRadius: 24 },
+        { scale: 55, x: 72, y: 55, rotation: 5, perspective: 0, cornerRadius: 24 }
+    ],
+    'trio-fan': [
+        { scale: 42, x: 18, y: 55, rotation: -10, perspective: 0, cornerRadius: 24 },
+        { scale: 48, x: 50, y: 50, rotation: 0, perspective: 0, cornerRadius: 24 },
+        { scale: 42, x: 82, y: 55, rotation: 10, perspective: 0, cornerRadius: 24 }
+    ],
+    'quad-grid': [
+        { scale: 40, x: 28, y: 30, rotation: -3, perspective: 0, cornerRadius: 24 },
+        { scale: 40, x: 72, y: 28, rotation: 3, perspective: 0, cornerRadius: 24 },
+        { scale: 44, x: 30, y: 78, rotation: -2, perspective: 0, cornerRadius: 24 },
+        { scale: 44, x: 72, y: 76, rotation: 2, perspective: 0, cornerRadius: 24 }
+    ],
+    'showcase': [
+        { scale: 38, x: 15, y: 52, rotation: -8, perspective: 0, cornerRadius: 24 },
+        { scale: 55, x: 50, y: 55, rotation: 0, perspective: 0, cornerRadius: 24 },
+        { scale: 38, x: 85, y: 52, rotation: 8, perspective: 0, cornerRadius: 24 }
+    ]
+};
+
+function getCollageDeviceDefaults() {
+    const ss = state.defaults.screenshot;
+    return {
+        image: null,
+        src: '',
+        name: '',
+        scale: ss.scale,
+        x: ss.x,
+        y: ss.y,
+        rotation: ss.rotation || 0,
+        perspective: ss.perspective || 0,
+        cornerRadius: ss.cornerRadius,
+        shadow: JSON.parse(JSON.stringify(ss.shadow)),
+        frame: JSON.parse(JSON.stringify(ss.frame)),
+        use3D: false,
+        device3D: 'iphone',
+        rotation3D: { x: 0, y: 0, z: 0 }
+    };
+}
+
+function toggleCollage(enabled) {
+    const screenshot = getCurrentScreenshot();
+    if (!screenshot) return;
+
+    const ss = screenshot.screenshot;
+    if (!ss.collage) {
+        ss.collage = { enabled: false, selectedDeviceIndex: 0, devices: [] };
+    }
+
+    ss.collage.enabled = enabled;
+
+    // Auto-create primary device when enabling with no devices
+    if (enabled && ss.collage.devices.length === 0) {
+        ss.collage.devices.push({
+            image: null, // Resolved from localizedImages at render time
+            src: '',
+            name: '',
+            scale: ss.scale,
+            x: ss.x,
+            y: ss.y,
+            rotation: ss.rotation || 0,
+            perspective: ss.perspective || 0,
+            cornerRadius: ss.cornerRadius,
+            shadow: JSON.parse(JSON.stringify(ss.shadow)),
+            frame: JSON.parse(JSON.stringify(ss.frame)),
+            use3D: ss.use3D || false,
+            device3D: ss.device3D || 'iphone',
+            rotation3D: ss.rotation3D ? { ...ss.rotation3D } : { x: 0, y: 0, z: 0 }
+        });
+    }
+
+    syncUIWithState();
+    updateCollageDeviceList();
+    updateCanvas();
+}
+
+function addCollageDevice(img, src, name) {
+    const screenshot = getCurrentScreenshot();
+    if (!screenshot) return;
+
+    const collage = screenshot.screenshot.collage;
+    if (!collage) return;
+
+    const device = getCollageDeviceDefaults();
+    device.image = img;
+    device.src = src;
+    device.name = name;
+    collage.devices.push(device);
+    collage.selectedDeviceIndex = collage.devices.length - 1;
+
+    updateCollageDeviceList();
+    syncUIWithState();
+    updateCanvas();
+}
+
+function removeCollageDevice(index) {
+    const screenshot = getCurrentScreenshot();
+    if (!screenshot) return;
+
+    const collage = screenshot.screenshot.collage;
+    if (!collage || index < 0 || index >= collage.devices.length) return;
+
+    // Don't allow removing the last device
+    if (collage.devices.length <= 1) return;
+
+    collage.devices.splice(index, 1);
+
+    // Adjust selected index
+    if (collage.selectedDeviceIndex >= collage.devices.length) {
+        collage.selectedDeviceIndex = collage.devices.length - 1;
+    }
+
+    updateCollageDeviceList();
+    syncUIWithState();
+    updateCanvas();
+}
+
+function selectCollageDevice(index) {
+    const screenshot = getCurrentScreenshot();
+    if (!screenshot) return;
+
+    const collage = screenshot.screenshot.collage;
+    if (!collage || index < 0 || index >= collage.devices.length) return;
+
+    collage.selectedDeviceIndex = index;
+
+    updateCollageDeviceList();
+    syncUIWithState();
+}
+
+function applyCollageLayout(layoutName) {
+    const screenshot = getCurrentScreenshot();
+    if (!screenshot) return;
+
+    const collage = screenshot.screenshot.collage;
+    if (!collage) return;
+
+    const layout = collageLayouts[layoutName];
+    if (!layout) return;
+
+    // Apply position settings to existing devices (up to layout count)
+    const shadowDefaults = JSON.parse(JSON.stringify(state.defaults.screenshot.shadow));
+    const frameDefaults = JSON.parse(JSON.stringify(state.defaults.screenshot.frame));
+
+    layout.forEach((pos, i) => {
+        if (i < collage.devices.length) {
+            Object.assign(collage.devices[i], pos);
+        }
+    });
+
+    // If layout has more slots than devices, the extras are ignored
+    // If devices has more than layout, extra devices keep their positions
+
+    syncUIWithState();
+    updateCanvas();
+}
+
+function updateCollageDeviceList() {
+    const list = document.getElementById('collage-device-list');
+    if (!list) return;
+
+    list.innerHTML = '';
+
+    const screenshot = getCurrentScreenshot();
+    if (!screenshot) return;
+
+    const collage = screenshot.screenshot?.collage;
+    if (!collage || !collage.enabled) return;
+
+    collage.devices.forEach((device, index) => {
+        const item = document.createElement('div');
+        item.className = 'collage-device-item' + (index === collage.selectedDeviceIndex ? ' selected' : '');
+        item.title = index === 0 ? 'Primary (from screenshot)' : (device.name || `Device ${index + 1}`);
+
+        // Get image for thumbnail
+        let thumbSrc = '';
+        if (index === 0) {
+            const img = getScreenshotImage(screenshot);
+            thumbSrc = img?.src || '';
+        } else {
+            thumbSrc = device.image?.src || device.src || '';
+        }
+
+        const is3D = device.use3D || false;
+        item.innerHTML = `
+            <img src="${thumbSrc}" alt="Device ${index + 1}">
+            <span class="collage-device-index">${index + 1}${is3D ? '<small>3D</small>' : ''}</span>
+            ${collage.devices.length > 1 ? `<button class="remove-device" title="Remove">&times;</button>` : ''}
+        `;
+
+        item.addEventListener('click', (e) => {
+            if (e.target.closest('.remove-device')) {
+                removeCollageDevice(index);
+                return;
+            }
+            selectCollageDevice(index);
+        });
+
+        list.appendChild(item);
+    });
+}
+
+function drawCollageToContext(context, dims, collage, screenshot) {
+    const canvas = context.canvas;
+
+    collage.devices.forEach((device, index) => {
+        let img;
+        if (index === 0) {
+            img = getScreenshotImage(screenshot);
+        } else {
+            img = device.image;
+        }
+
+        if (device.use3D && typeof renderThreeJSCollageDevice === 'function' && phoneModelLoaded) {
+            renderThreeJSCollageDevice(canvas, dims.width, dims.height, img, device);
+        } else if (img) {
+            drawScreenshotToContext(context, dims, img, device);
+        }
+    });
+}
+
+// Reconstruct Image objects for collage devices from saved src data
+function reconstructCollageImages() {
+    const promises = [];
+
+    state.screenshots.forEach(screenshot => {
+        const collage = screenshot.screenshot?.collage;
+        if (!collage?.devices) return;
+
+        collage.devices.forEach((device, index) => {
+            // Device 0 uses localizedImages, skip
+            if (index === 0) return;
+
+            if (device.src) {
+                promises.push(new Promise(resolve => {
+                    const img = new Image();
+                    img.onload = () => {
+                        device.image = img;
+                        resolve();
+                    };
+                    img.onerror = resolve;
+                    img.src = device.src;
+                }));
+            }
+        });
+    });
+
+    return promises.length > 0 ? Promise.all(promises) : Promise.resolve();
+}
+
 function applyPositionPreset(preset) {
     const presets = {
         'centered': { scale: 70, x: 50, y: 50, rotation: 0, perspective: 0 },
@@ -4465,6 +4888,16 @@ function transferStyle(sourceIndex, targetIndex) {
     // Deep copy screenshot settings
     target.screenshot = JSON.parse(JSON.stringify(source.screenshot));
 
+    // Restore collage device Image objects (lost in JSON serialization)
+    if (target.screenshot.collage?.devices) {
+        target.screenshot.collage.devices.forEach((device, i) => {
+            const srcDevice = source.screenshot.collage?.devices?.[i];
+            if (srcDevice?.image) {
+                device.image = srcDevice.image;
+            }
+        });
+    }
+
     // Copy text styling but preserve actual text content
     const targetHeadlines = target.text.headlines;
     const targetSubheadlines = target.text.subheadlines;
@@ -4667,19 +5100,25 @@ function updateCanvas() {
         drawNoise();
     }
 
-    // Draw screenshot (2D mode) or 3D phone model
+    // Draw screenshot (2D mode), 3D phone model, or collage
     if (state.screenshots.length > 0) {
-        const ss = getScreenshotSettings();
-        const use3D = ss.use3D || false;
-        if (use3D && typeof renderThreeJSToCanvas === 'function' && phoneModelLoaded) {
-            // In 3D mode, update the screen texture and render the phone model
-            if (typeof updateScreenTexture === 'function') {
-                updateScreenTexture();
+        const screenshot = getCurrentScreenshot();
+        const ssRaw = screenshot?.screenshot;
+        const isCollage = ssRaw?.collage?.enabled && ssRaw.collage.devices.length > 0;
+
+        if (isCollage) {
+            drawCollageToContext(ctx, dims, ssRaw.collage, screenshot);
+        } else {
+            const ss = getScreenshotSettings();
+            const use3D = ss.use3D || false;
+            if (use3D && typeof renderThreeJSToCanvas === 'function' && phoneModelLoaded) {
+                if (typeof updateScreenTexture === 'function') {
+                    updateScreenTexture();
+                }
+                renderThreeJSToCanvas(canvas, dims.width, dims.height);
+            } else if (!use3D) {
+                drawScreenshot();
             }
-            renderThreeJSToCanvas(canvas, dims.width, dims.height);
-        } else if (!use3D) {
-            // In 2D mode, draw the screenshot normally
-            drawScreenshot();
         }
     }
 
@@ -4697,12 +5136,15 @@ function updateSidePreviews() {
     const maxPreviewHeight = 700;
     const previewScale = Math.min(maxPreviewWidth / dims.width, maxPreviewHeight / dims.height);
 
-    // Initialize Three.js if any screenshot uses 3D mode (needed for side previews)
-    const any3D = state.screenshots.some(s => s.screenshot?.use3D);
+    // Initialize Three.js if any screenshot uses 3D mode (including collage devices)
+    const any3D = state.screenshots.some(s => {
+        if (s.screenshot?.use3D) return true;
+        return s.screenshot?.collage?.devices?.some(d => d.use3D);
+    });
     if (any3D && typeof showThreeJS === 'function') {
         showThreeJS(true);
 
-        // Preload phone models for adjacent screenshots to prevent flicker
+        // Preload phone models for adjacent screenshots (including collage devices)
         if (typeof loadCachedPhoneModel === 'function') {
             const adjacentIndices = [state.selectedIndex - 1, state.selectedIndex + 1]
                 .filter(i => i >= 0 && i < state.screenshots.length);
@@ -4710,6 +5152,12 @@ function updateSidePreviews() {
                 const ss = state.screenshots[i]?.screenshot;
                 if (ss?.use3D && ss?.device3D) {
                     loadCachedPhoneModel(ss.device3D);
+                }
+                // Also preload models for collage devices
+                if (ss?.collage?.devices) {
+                    ss.collage.devices.forEach(d => {
+                        if (d.use3D && d.device3D) loadCachedPhoneModel(d.device3D);
+                    });
                 }
             });
         }
@@ -4798,6 +5246,14 @@ function slideToScreenshot(newIndex, direction) {
             const ss = state.screenshots[index]?.screenshot;
             if (ss?.use3D && ss?.device3D && typeof loadCachedPhoneModel === 'function') {
                 modelPromises.push(loadCachedPhoneModel(ss.device3D).catch(() => null));
+            }
+            // Also preload models for collage devices
+            if (ss?.collage?.devices && typeof loadCachedPhoneModel === 'function') {
+                ss.collage.devices.forEach(d => {
+                    if (d.use3D && d.device3D) {
+                        modelPromises.push(loadCachedPhoneModel(d.device3D).catch(() => null));
+                    }
+                });
             }
         }
     });
@@ -4903,16 +5359,19 @@ function renderScreenshotToCanvas(index, targetCanvas, targetCtx, dims, previewS
         drawNoiseToContext(targetCtx, dims, bg.noiseIntensity);
     }
 
-    // Draw screenshot - 3D if active for this screenshot, otherwise 2D
+    // Draw screenshot - collage, 3D, or 2D
     const settings = screenshot.screenshot;
-    const use3D = settings.use3D || false;
+    const isCollage = settings.collage?.enabled && settings.collage.devices.length > 0;
 
-    if (use3D && typeof renderThreeJSForScreenshot === 'function' && phoneModelLoaded) {
-        // Render 3D phone model for this specific screenshot
-        renderThreeJSForScreenshot(targetCanvas, dims.width, dims.height, index);
+    if (isCollage) {
+        drawCollageToContext(targetCtx, dims, settings.collage, screenshot);
     } else {
-        // Draw 2D screenshot using localized image
-        drawScreenshotToContext(targetCtx, dims, img, settings);
+        const use3D = settings.use3D || false;
+        if (use3D && typeof renderThreeJSForScreenshot === 'function' && phoneModelLoaded) {
+            renderThreeJSForScreenshot(targetCanvas, dims.width, dims.height, index);
+        } else {
+            drawScreenshotToContext(targetCtx, dims, img, settings);
+        }
     }
 
     // Draw text
