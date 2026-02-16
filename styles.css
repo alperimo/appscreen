@@ -2081,6 +2081,68 @@ input[type="range"]::-webkit-slider-thumb {
     color: var(--accent);
 }
 
+/* Collage screenshot picker */
+.collage-screenshot-picker {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: calc(100% + 4px);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    padding: 6px;
+    max-height: 260px;
+    overflow-y: auto;
+    z-index: 100;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.collage-screenshot-picker .picker-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.collage-screenshot-picker .picker-item:hover {
+    background: var(--bg-tertiary);
+}
+
+.collage-screenshot-picker .picker-item img {
+    width: 32px;
+    height: 48px;
+    object-fit: cover;
+    border-radius: 4px;
+    border: 1px solid var(--border-color);
+    flex-shrink: 0;
+}
+
+.collage-screenshot-picker .picker-item-name {
+    font-size: 12px;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.collage-screenshot-picker .picker-empty {
+    padding: 12px;
+    text-align: center;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.collage-device-item img.missing {
+    opacity: 0.3;
+    border: 1px dashed var(--danger, #ff4444);
+}
+
 /* Position presets */
 .preset-positions {
     display: grid;

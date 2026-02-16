@@ -1080,8 +1080,7 @@ function saveState() {
         if (s.screenshot?.collage?.devices?.length > 0) {
             screenshotSettings = { ...s.screenshot, collage: { ...s.screenshot.collage } };
             screenshotSettings.collage.devices = s.screenshot.collage.devices.map(d => ({
-                src: d.src || '',
-                name: d.name || '',
+                screenshotIndex: d.screenshotIndex,
                 scale: d.scale,
                 x: d.x,
                 y: d.y,
@@ -1303,17 +1302,16 @@ function loadState() {
 
                         function checkAllLoaded() {
                             if (loadedCount === totalToLoad) {
-                                // Reconstruct collage device Image objects
-                                reconstructCollageImages().then(() => {
-                                    updateScreenshotList();
-                                    syncUIWithState();
-                                    updateGradientStopsUI();
-                                    updateCanvas();
+                                // Clean up any stale collage references
+                                cleanupCollageReferences();
+                                updateScreenshotList();
+                                syncUIWithState();
+                                updateGradientStopsUI();
+                                updateCanvas();
 
-                                    if (needsMigration && parsed.screenshots.length > 0) {
-                                        showMigrationPrompt();
-                                    }
-                                });
+                                if (needsMigration && parsed.screenshots.length > 0) {
+                                    showMigrationPrompt();
+                                }
                             }
                         }
                     } else {
@@ -1568,6 +1566,130 @@ async function duplicateProject(sourceProjectId, customName) {
     });
 }
 
+// Export entire project to a downloadable JSON file (including all images as base64)
+async function exportProjectToFile() {
+    if (!db) {
+        await showAppAlert('Database not ready', 'error');
+        return;
+    }
+
+    // First save current state to ensure it's up to date
+    saveState();
+
+    const transaction = db.transaction([PROJECTS_STORE], 'readonly');
+    const store = transaction.objectStore(PROJECTS_STORE);
+    const request = store.get(currentProjectId);
+
+    request.onsuccess = () => {
+        const projectData = request.result;
+        if (!projectData) {
+            showAppAlert('Could not read project data', 'error');
+            return;
+        }
+
+        const currentProject = projects.find(p => p.id === currentProjectId);
+        const exportData = {
+            _type: 'appscreen-project-export',
+            _version: 1,
+            projectName: currentProject?.name || 'Project',
+            exportDate: new Date().toISOString(),
+            data: projectData
+        };
+
+        const jsonStr = JSON.stringify(exportData);
+        const blob = new Blob([jsonStr], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+
+        const a = document.createElement('a');
+        a.href = url;
+        const safeName = (currentProject?.name || 'project').replace(/[^a-zA-Z0-9_-]/g, '_');
+        a.download = `${safeName}_project.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+
+        showAppAlert('Project exported successfully', 'success');
+    };
+
+    request.onerror = () => {
+        showAppAlert('Failed to export project', 'error');
+    };
+}
+
+// Import project from a JSON file
+async function importProjectFromFile() {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json';
+    input.style.display = 'none';
+    document.body.appendChild(input);
+
+    input.addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if (!file) { input.remove(); return; }
+
+        try {
+            const text = await file.text();
+            const parsed = JSON.parse(text);
+
+            // Validate export format
+            if (parsed._type !== 'appscreen-project-export') {
+                await showAppAlert('Invalid project file format', 'error');
+                input.remove();
+                return;
+            }
+
+            const projectData = parsed.data;
+            if (!projectData) {
+                await showAppAlert('No project data found in file', 'error');
+                input.remove();
+                return;
+            }
+
+            // Assign new unique ID
+            const newId = 'project_' + Date.now();
+            projectData.id = newId;
+
+            const projectName = parsed.projectName || 'Imported Project';
+            const screenshotCount = projectData.screenshots?.length || 0;
+
+            // Save to IndexedDB
+            if (!db) {
+                await showAppAlert('Database not ready', 'error');
+                input.remove();
+                return;
+            }
+
+            const transaction = db.transaction([PROJECTS_STORE], 'readwrite');
+            const store = transaction.objectStore(PROJECTS_STORE);
+            store.put(projectData);
+
+            transaction.oncomplete = async () => {
+                // Add to project list
+                projects.push({ id: newId, name: projectName, screenshotCount: screenshotCount });
+                saveProjectsMeta();
+
+                // Switch to the imported project
+                await switchProject(newId);
+                updateProjectSelector();
+                showAppAlert(`Project "${projectName}" imported (${screenshotCount} screenshots)`, 'success');
+            };
+
+            transaction.onerror = () => {
+                showAppAlert('Failed to save imported project', 'error');
+            };
+        } catch (err) {
+            console.error('Import error:', err);
+            await showAppAlert('Failed to read project file: ' + err.message, 'error');
+        }
+
+        input.remove();
+    });
+
+    input.click();
+}
+
 function duplicateScreenshot(index) {
     const original = state.screenshots[index];
     if (!original) return;
@@ -1612,6 +1734,20 @@ function duplicateScreenshot(index) {
     }
 
     state.screenshots.splice(index + 1, 0, clone);
+
+    // Update collage references: indices >= index+1 need to shift up by 1
+    // (do this AFTER the splice, for all screenshots except the new clone)
+    state.screenshots.forEach((ss, i) => {
+        if (i === index + 1) return; // Skip the new clone
+        const collage = ss.screenshot?.collage;
+        if (!collage?.devices) return;
+        collage.devices.forEach(device => {
+            if (device.screenshotIndex > index) {
+                device.screenshotIndex++;
+            }
+        });
+    });
+
     state.selectedIndex = index + 1;
 
     updateScreenshotList();
@@ -1980,6 +2116,15 @@ function setupEventListeners() {
         document.getElementById('delete-project-message').textContent =
             `Are you sure you want to delete "${project ? project.name : 'this project'}"? This cannot be undone.`;
         document.getElementById('delete-project-modal').classList.add('visible');
+    });
+
+    // Export/Import project buttons
+    document.getElementById('export-project-btn').addEventListener('click', () => {
+        exportProjectToFile();
+    });
+
+    document.getElementById('import-project-btn').addEventListener('click', () => {
+        importProjectFromFile();
     });
 
     // Project modal buttons
@@ -2539,28 +2684,9 @@ function setupEventListeners() {
         });
     });
 
-    // Collage add device button
+    // Collage add device button - show screenshot picker
     document.getElementById('collage-add-btn').addEventListener('click', () => {
-        document.getElementById('collage-file-input').click();
-    });
-
-    // Collage file input
-    document.getElementById('collage-file-input').addEventListener('change', (e) => {
-        const file = e.target.files[0];
-        if (!file || !file.type.startsWith('image/')) return;
-
-        const reader = new FileReader();
-        reader.onload = (ev) => {
-            const img = new Image();
-            img.onload = () => {
-                addCollageDevice(img, ev.target.result, file.name);
-            };
-            img.src = ev.target.result;
-        };
-        reader.readAsDataURL(file);
-
-        // Reset input for re-upload
-        e.target.value = '';
+        showCollageScreenshotPicker();
     });
 
     // Shadow toggle
@@ -4076,12 +4202,10 @@ const collageLayouts = {
     ]
 };
 
-function getCollageDeviceDefaults() {
+function getCollageDeviceDefaults(screenshotIndex) {
     const ss = state.defaults.screenshot;
     return {
-        image: null,
-        src: '',
-        name: '',
+        screenshotIndex: screenshotIndex != null ? screenshotIndex : -1,
         scale: ss.scale,
         x: ss.x,
         y: ss.y,
@@ -4110,9 +4234,7 @@ function toggleCollage(enabled) {
     // Auto-create primary device when enabling with no devices
     if (enabled && ss.collage.devices.length === 0) {
         ss.collage.devices.push({
-            image: null, // Resolved from localizedImages at render time
-            src: '',
-            name: '',
+            screenshotIndex: state.selectedIndex,
             scale: ss.scale,
             x: ss.x,
             y: ss.y,
@@ -4132,17 +4254,16 @@ function toggleCollage(enabled) {
     updateCanvas();
 }
 
-function addCollageDevice(img, src, name) {
+function addCollageDevice(screenshotIndex) {
     const screenshot = getCurrentScreenshot();
     if (!screenshot) return;
 
     const collage = screenshot.screenshot.collage;
     if (!collage) return;
 
-    const device = getCollageDeviceDefaults();
-    device.image = img;
-    device.src = src;
-    device.name = name;
+    if (screenshotIndex < 0 || screenshotIndex >= state.screenshots.length) return;
+
+    const device = getCollageDeviceDefaults(screenshotIndex);
     collage.devices.push(device);
     collage.selectedDeviceIndex = collage.devices.length - 1;
 
@@ -4228,20 +4349,22 @@ function updateCollageDeviceList() {
     collage.devices.forEach((device, index) => {
         const item = document.createElement('div');
         item.className = 'collage-device-item' + (index === collage.selectedDeviceIndex ? ' selected' : '');
-        item.title = index === 0 ? 'Primary (from screenshot)' : (device.name || `Device ${index + 1}`);
 
-        // Get image for thumbnail
+        // Get image from referenced screenshot
+        const refScreenshot = state.screenshots[device.screenshotIndex];
+        const refName = refScreenshot ? refScreenshot.name : 'Missing';
+        item.title = refName;
+
         let thumbSrc = '';
-        if (index === 0) {
-            const img = getScreenshotImage(screenshot);
+        if (refScreenshot) {
+            const img = getScreenshotImage(refScreenshot);
             thumbSrc = img?.src || '';
-        } else {
-            thumbSrc = device.image?.src || device.src || '';
         }
 
         const is3D = device.use3D || false;
+        const isMissing = !refScreenshot;
         item.innerHTML = `
-            <img src="${thumbSrc}" alt="Device ${index + 1}">
+            <img src="${thumbSrc}" alt="Device ${index + 1}" ${isMissing ? 'class="missing"' : ''}>
             <span class="collage-device-index">${index + 1}${is3D ? '<small>3D</small>' : ''}</span>
             ${collage.devices.length > 1 ? `<button class="remove-device" title="Remove">&times;</button>` : ''}
         `;
@@ -4262,12 +4385,11 @@ function drawCollageToContext(context, dims, collage, screenshot) {
     const canvas = context.canvas;
 
     collage.devices.forEach((device, index) => {
-        let img;
-        if (index === 0) {
-            img = getScreenshotImage(screenshot);
-        } else {
-            img = device.image;
-        }
+        // Get image from referenced screenshot
+        const refScreenshot = state.screenshots[device.screenshotIndex];
+        if (!refScreenshot) return; // Skip if screenshot was deleted
+
+        const img = getScreenshotImage(refScreenshot);
 
         if (device.use3D && typeof renderThreeJSCollageDevice === 'function' && phoneModelLoaded) {
             renderThreeJSCollageDevice(canvas, dims.width, dims.height, img, device);
@@ -4277,33 +4399,127 @@ function drawCollageToContext(context, dims, collage, screenshot) {
     });
 }
 
-// Reconstruct Image objects for collage devices from saved src data
-function reconstructCollageImages() {
-    const promises = [];
-
+// Clean up stale collage references when screenshots change
+function cleanupCollageReferences() {
     state.screenshots.forEach(screenshot => {
         const collage = screenshot.screenshot?.collage;
         if (!collage?.devices) return;
 
-        collage.devices.forEach((device, index) => {
-            // Device 0 uses localizedImages, skip
-            if (index === 0) return;
+        // Remove devices pointing to deleted screenshots
+        collage.devices = collage.devices.filter(device => {
+            return device.screenshotIndex >= 0 && device.screenshotIndex < state.screenshots.length;
+        });
 
-            if (device.src) {
-                promises.push(new Promise(resolve => {
-                    const img = new Image();
-                    img.onload = () => {
-                        device.image = img;
-                        resolve();
-                    };
-                    img.onerror = resolve;
-                    img.src = device.src;
-                }));
+        // Adjust selectedDeviceIndex if needed
+        if (collage.selectedDeviceIndex >= collage.devices.length) {
+            collage.selectedDeviceIndex = Math.max(0, collage.devices.length - 1);
+        }
+
+        // If no devices left, disable collage
+        if (collage.devices.length === 0) {
+            collage.enabled = false;
+        }
+    });
+}
+
+// Update collage screenshot references after a screenshot is removed at given index
+function updateCollageIndicesAfterDelete(deletedIndex) {
+    state.screenshots.forEach(screenshot => {
+        const collage = screenshot.screenshot?.collage;
+        if (!collage?.devices) return;
+
+        // Remove devices pointing to the deleted index and shift higher indices down
+        collage.devices = collage.devices.filter(device => {
+            return device.screenshotIndex !== deletedIndex;
+        });
+
+        collage.devices.forEach(device => {
+            if (device.screenshotIndex > deletedIndex) {
+                device.screenshotIndex--;
+            }
+        });
+
+        // Adjust selectedDeviceIndex if needed
+        if (collage.selectedDeviceIndex >= collage.devices.length) {
+            collage.selectedDeviceIndex = Math.max(0, collage.devices.length - 1);
+        }
+
+        // If no devices left, disable collage
+        if (collage.devices.length === 0) {
+            collage.enabled = false;
+        }
+    });
+}
+
+// Show screenshot picker for adding collage devices
+function showCollageScreenshotPicker() {
+    // Remove any existing picker
+    const existing = document.querySelector('.collage-screenshot-picker');
+    if (existing) { existing.remove(); return; }
+
+    const picker = document.createElement('div');
+    picker.className = 'collage-screenshot-picker';
+
+    if (state.screenshots.length === 0) {
+        picker.innerHTML = '<div class="picker-empty">No screenshots in project</div>';
+    } else {
+        state.screenshots.forEach((ss, index) => {
+            const img = getScreenshotImage(ss);
+            const item = document.createElement('div');
+            item.className = 'picker-item';
+            item.innerHTML = `
+                <img src="${img?.src || ''}" alt="${ss.name}">
+                <span class="picker-item-name">${ss.name || 'Screenshot ' + (index + 1)}</span>
+            `;
+            item.addEventListener('click', () => {
+                addCollageDevice(index);
+                picker.remove();
+            });
+            picker.appendChild(item);
+        });
+    }
+
+    // Position picker near the add button
+    const addBtn = document.getElementById('collage-add-btn');
+    if (addBtn) {
+        addBtn.parentElement.style.position = 'relative';
+        addBtn.parentElement.appendChild(picker);
+    }
+
+    // Close picker on outside click
+    setTimeout(() => {
+        document.addEventListener('click', function closePicker(e) {
+            if (!picker.contains(e.target) && e.target.id !== 'collage-add-btn' && !e.target.closest('#collage-add-btn')) {
+                picker.remove();
+                document.removeEventListener('click', closePicker);
+            }
+        });
+    }, 10);
+}
+
+// Update collage screenshot references after drag & drop reorder
+function updateCollageIndicesAfterReorder(fromIndex, toIndex) {
+    state.screenshots.forEach(screenshot => {
+        const collage = screenshot.screenshot?.collage;
+        if (!collage?.devices) return;
+
+        collage.devices.forEach(device => {
+            if (device.screenshotIndex === fromIndex) {
+                // This device pointed to the dragged item, now at toIndex
+                device.screenshotIndex = toIndex;
+            } else if (fromIndex < toIndex) {
+                // Dragged forward: items between (fromIndex, toIndex] shift down by 1
+                if (device.screenshotIndex > fromIndex && device.screenshotIndex <= toIndex) {
+                    device.screenshotIndex--;
+                }
+            } else {
+                // Dragged backward: items between [toIndex, fromIndex) shift up by 1
+                if (device.screenshotIndex >= toIndex && device.screenshotIndex < fromIndex) {
+                    device.screenshotIndex++;
+                }
             }
         });
     });
-
-    return promises.length > 0 ? Promise.all(promises) : Promise.resolve();
 }
 
 function applyPositionPreset(preset) {
@@ -4713,6 +4929,9 @@ function updateScreenshotList() {
                 state.screenshots.splice(draggedScreenshotIndex, 1);
                 state.screenshots.splice(targetIndex, 0, draggedItem);
 
+                // Update collage references after reordering
+                updateCollageIndicesAfterReorder(draggedScreenshotIndex, targetIndex);
+
                 // Update selected index to follow the selected item
                 if (state.selectedIndex === draggedScreenshotIndex) {
                     state.selectedIndex = targetIndex;
@@ -4825,6 +5044,8 @@ function updateScreenshotList() {
             deleteBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
                 menu?.classList.remove('open');
+                // Update collage references before removing the screenshot
+                updateCollageIndicesAfterDelete(index);
                 state.screenshots.splice(index, 1);
                 if (state.selectedIndex >= state.screenshots.length) {
                     state.selectedIndex = Math.max(0, state.screenshots.length - 1);
@@ -4887,16 +5108,6 @@ function transferStyle(sourceIndex, targetIndex) {
 
     // Deep copy screenshot settings
     target.screenshot = JSON.parse(JSON.stringify(source.screenshot));
-
-    // Restore collage device Image objects (lost in JSON serialization)
-    if (target.screenshot.collage?.devices) {
-        target.screenshot.collage.devices.forEach((device, i) => {
-            const srcDevice = source.screenshot.collage?.devices?.[i];
-            if (srcDevice?.image) {
-                device.image = srcDevice.image;
-            }
-        });
-    }
 
     // Copy text styling but preserve actual text content
     const targetHeadlines = target.text.headlines;
