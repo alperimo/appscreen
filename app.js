@@ -52,6 +52,16 @@ const state = {
                 width: 12,
                 opacity: 100
             },
+            glow: {
+                enabled: false,
+                color: '#ff8c00',
+                intensity: 50,
+                radius: 50,
+                x: 50,
+                y: 50,
+                scaleX: 100,
+                scaleY: 100
+            },
             collage: {
                 enabled: false,
                 selectedDeviceIndex: 0,
@@ -181,6 +191,15 @@ function setScreenshotSetting(key, value) {
         const parts = key.split('.');
         let obj = ss;
         for (let i = 0; i < parts.length - 1; i++) {
+            if (!obj[parts[i]]) {
+                // Initialize top-level objects with full defaults when first created
+                const topKey = parts[0];
+                if (i === 0 && state.defaults.screenshot[topKey]) {
+                    obj[parts[i]] = JSON.parse(JSON.stringify(state.defaults.screenshot[topKey]));
+                } else {
+                    obj[parts[i]] = {};
+                }
+            }
             obj = obj[parts[i]];
         }
         obj[parts[parts.length - 1]] = value;
@@ -1035,11 +1054,13 @@ async function init() {
         await openDatabase();
         await loadProjectsMeta();
         await loadState();
-        syncUIWithState();
-        updateCanvas();
+        // Note: syncUIWithState() and updateCanvas() are called inside loadState
+        // (via checkAllLoaded or the no-screenshots branch). Don't call them here
+        // to avoid a race condition where updateCanvas() saves empty screenshots
+        // before the async image loading in loadState completes.
     } catch (e) {
         console.error('Initialization error:', e);
-        // Continue with defaults
+        // Fallback: loadState failed entirely, render whatever state we have
         syncUIWithState();
         updateCanvas();
     }
@@ -1095,12 +1116,18 @@ function saveState() {
             }));
         }
 
+        // Strip non-serializable Image object from background; save data URL separately
+        const backgroundToSave = { ...s.background, image: null };
+        if (s.background?.image?.src) {
+            backgroundToSave.imageSrc = s.background.image.src;
+        }
+
         return {
             src: s.image?.src || '', // Legacy compatibility
             name: s.name,
             deviceType: s.deviceType,
             localizedImages: localizedImages,
-            background: s.background,
+            background: backgroundToSave,
             screenshot: screenshotSettings,
             text: s.text,
             overrides: s.overrides
@@ -1130,7 +1157,8 @@ function saveState() {
     try {
         const transaction = db.transaction([PROJECTS_STORE], 'readwrite');
         const store = transaction.objectStore(PROJECTS_STORE);
-        store.put(stateToSave);
+        const req = store.put(stateToSave);
+        transaction.onerror = (e) => console.error('Error saving state to IndexedDB:', e.target.error);
     } catch (e) {
         console.error('Error saving state:', e);
     }
@@ -1334,6 +1362,10 @@ function loadState() {
                     // Load defaults (new format) or use migrated settings
                     if (parsed.defaults) {
                         state.defaults = parsed.defaults;
+                        // Inject any new default properties added after this project was saved
+                        if (!state.defaults.screenshot.glow) {
+                            state.defaults.screenshot.glow = { enabled: false, color: '#ff8c00', intensity: 50, radius: 50, x: 50, y: 50, scaleX: 100, scaleY: 100 };
+                        }
                     } else {
                         state.defaults.background = migratedBackground;
                         state.defaults.screenshot = migratedScreenshot;
@@ -1427,6 +1459,16 @@ function resetStateToDefaults() {
                 color: '#1d1d1f',
                 width: 12,
                 opacity: 100
+            },
+            glow: {
+                enabled: false,
+                color: '#ff8c00',
+                intensity: 50,
+                radius: 50,
+                x: 50,
+                y: 50,
+                scaleX: 100,
+                scaleY: 100
             },
             collage: {
                 enabled: false,
@@ -1852,6 +1894,34 @@ function syncUIWithState() {
     document.getElementById('frame-width-value').textContent = formatValue(ss.frame.width) + 'px';
     document.getElementById('frame-opacity').value = ss.frame.opacity;
     document.getElementById('frame-opacity-value').textContent = formatValue(ss.frame.opacity) + '%';
+
+    // Glow
+    const _glowDefaults = { enabled: false, color: '#ff8c00', intensity: 50, radius: 50, x: 50, y: 50, scaleX: 100, scaleY: 100 };
+    const glow = ss.glow || state.defaults.screenshot?.glow || _glowDefaults;
+    document.getElementById('glow-toggle').classList.toggle('active', glow.enabled);
+    document.getElementById('glow-color').value = glow.color;
+    document.getElementById('glow-color-hex').value = glow.color;
+    document.getElementById('glow-intensity').value = glow.intensity;
+    document.getElementById('glow-intensity-value').textContent = formatValue(glow.intensity) + '%';
+    document.getElementById('glow-radius').value = glow.radius;
+    document.getElementById('glow-radius-value').textContent = formatValue(glow.radius) + '%';
+    document.getElementById('glow-x').value = glow.x;
+    document.getElementById('glow-x-value').textContent = formatValue(glow.x) + '%';
+    document.getElementById('glow-y').value = glow.y;
+    document.getElementById('glow-y-value').textContent = formatValue(glow.y) + '%';
+    document.getElementById('glow-scale-x').value = glow.scaleX;
+    document.getElementById('glow-scale-x-value').textContent = formatValue(glow.scaleX) + '%';
+    document.getElementById('glow-scale-y').value = glow.scaleY;
+    document.getElementById('glow-scale-y-value').textContent = formatValue(glow.scaleY) + '%';
+    // Sync glow toggle section visibility
+    const glowToggleRow = document.getElementById('glow-toggle').closest('.toggle-row');
+    if (glow.enabled) {
+        if (glowToggleRow) glowToggleRow.classList.remove('collapsed');
+        document.getElementById('glow-options').style.display = 'block';
+    } else {
+        if (glowToggleRow) glowToggleRow.classList.add('collapsed');
+        document.getElementById('glow-options').style.display = 'none';
+    }
 
     // Text
     const currentHeadline = txt.headlines ? (txt.headlines[txt.currentHeadlineLang || 'en'] || '') : (txt.headline || '');
@@ -2584,6 +2654,7 @@ function setupEventListeners() {
                 const img = new Image();
                 img.onload = () => {
                     setBackground('image', img);
+                    setBackground('imageSrc', event.target.result); // Persist data URL for reload
                     document.getElementById('bg-image-preview').src = event.target.result;
                     document.getElementById('bg-image-preview').style.display = 'block';
                     updateCanvas();
@@ -2774,6 +2845,72 @@ function setupEventListeners() {
     document.getElementById('frame-opacity').addEventListener('input', (e) => {
         setScreenshotSetting('frame.opacity', parseInt(e.target.value));
         document.getElementById('frame-opacity-value').textContent = formatValue(e.target.value) + '%';
+        updateCanvas();
+    });
+
+    // Glow toggle
+    document.getElementById('glow-toggle').addEventListener('click', function () {
+        this.classList.toggle('active');
+        const glowEnabled = this.classList.contains('active');
+        setScreenshotSetting('glow.enabled', glowEnabled);
+        const row = this.closest('.toggle-row');
+        if (glowEnabled) {
+            if (row) row.classList.remove('collapsed');
+            document.getElementById('glow-options').style.display = 'block';
+        } else {
+            if (row) row.classList.add('collapsed');
+            document.getElementById('glow-options').style.display = 'none';
+        }
+        updateCanvas();
+    });
+
+    document.getElementById('glow-color').addEventListener('input', (e) => {
+        setScreenshotSetting('glow.color', e.target.value);
+        document.getElementById('glow-color-hex').value = e.target.value;
+        updateCanvas();
+    });
+
+    document.getElementById('glow-color-hex').addEventListener('input', (e) => {
+        if (/^#[0-9A-Fa-f]{6}$/.test(e.target.value)) {
+            setScreenshotSetting('glow.color', e.target.value);
+            document.getElementById('glow-color').value = e.target.value;
+            updateCanvas();
+        }
+    });
+
+    document.getElementById('glow-intensity').addEventListener('input', (e) => {
+        setScreenshotSetting('glow.intensity', parseInt(e.target.value));
+        document.getElementById('glow-intensity-value').textContent = formatValue(e.target.value) + '%';
+        updateCanvas();
+    });
+
+    document.getElementById('glow-radius').addEventListener('input', (e) => {
+        setScreenshotSetting('glow.radius', parseInt(e.target.value));
+        document.getElementById('glow-radius-value').textContent = formatValue(e.target.value) + '%';
+        updateCanvas();
+    });
+
+    document.getElementById('glow-x').addEventListener('input', (e) => {
+        setScreenshotSetting('glow.x', parseInt(e.target.value));
+        document.getElementById('glow-x-value').textContent = formatValue(e.target.value) + '%';
+        updateCanvas();
+    });
+
+    document.getElementById('glow-y').addEventListener('input', (e) => {
+        setScreenshotSetting('glow.y', parseInt(e.target.value));
+        document.getElementById('glow-y-value').textContent = formatValue(e.target.value) + '%';
+        updateCanvas();
+    });
+
+    document.getElementById('glow-scale-x').addEventListener('input', (e) => {
+        setScreenshotSetting('glow.scaleX', parseInt(e.target.value));
+        document.getElementById('glow-scale-x-value').textContent = formatValue(e.target.value) + '%';
+        updateCanvas();
+    });
+
+    document.getElementById('glow-scale-y').addEventListener('input', (e) => {
+        setScreenshotSetting('glow.scaleY', parseInt(e.target.value));
+        document.getElementById('glow-scale-y-value').textContent = formatValue(e.target.value) + '%';
         updateCanvas();
     });
 
@@ -5311,6 +5448,11 @@ function updateCanvas() {
         drawNoise();
     }
 
+    // Draw glow behind device if enabled
+    if (state.screenshots.length > 0) {
+        drawGlow();
+    }
+
     // Draw screenshot (2D mode), 3D phone model, or collage
     if (state.screenshots.length > 0) {
         const screenshot = getCurrentScreenshot();
@@ -5570,6 +5712,9 @@ function renderScreenshotToCanvas(index, targetCanvas, targetCtx, dims, previewS
         drawNoiseToContext(targetCtx, dims, bg.noiseIntensity);
     }
 
+    // Draw glow behind device
+    drawGlowToContext(targetCtx, dims, settings, screenshot);
+
     // Draw screenshot - collage, 3D, or 2D
     const settings = screenshot.screenshot;
     const isCollage = settings.collage?.enabled && settings.collage.devices.length > 0;
@@ -5608,50 +5753,58 @@ function drawBackgroundToContext(context, dims, bg) {
     } else if (bg.type === 'solid') {
         context.fillStyle = bg.solid;
         context.fillRect(0, 0, dims.width, dims.height);
-    } else if (bg.type === 'image' && bg.image) {
+    } else if (bg.type === 'image') {
+        // Reconstruct HTMLImageElement from saved data URL if needed
+        if (!bg.image && bg.imageSrc) {
+            const restoredImg = new Image();
+            restoredImg.src = bg.imageSrc;
+            bg.image = restoredImg;
+        }
         const img = bg.image;
-        let sx = 0, sy = 0, sw = img.width, sh = img.height;
-        let dx = 0, dy = 0, dw = dims.width, dh = dims.height;
+        if (img && img.complete && img.naturalWidth > 0) {
+            let sx = 0, sy = 0, sw = img.width, sh = img.height;
+            let dx = 0, dy = 0, dw = dims.width, dh = dims.height;
 
-        if (bg.imageFit === 'cover') {
-            const imgRatio = img.width / img.height;
-            const canvasRatio = dims.width / dims.height;
+            if (bg.imageFit === 'cover') {
+                const imgRatio = img.width / img.height;
+                const canvasRatio = dims.width / dims.height;
 
-            if (imgRatio > canvasRatio) {
-                sw = img.height * canvasRatio;
-                sx = (img.width - sw) / 2;
-            } else {
-                sh = img.width / canvasRatio;
-                sy = (img.height - sh) / 2;
+                if (imgRatio > canvasRatio) {
+                    sw = img.height * canvasRatio;
+                    sx = (img.width - sw) / 2;
+                } else {
+                    sh = img.width / canvasRatio;
+                    sy = (img.height - sh) / 2;
+                }
+            } else if (bg.imageFit === 'contain') {
+                const imgRatio = img.width / img.height;
+                const canvasRatio = dims.width / dims.height;
+
+                if (imgRatio > canvasRatio) {
+                    dh = dims.width / imgRatio;
+                    dy = (dims.height - dh) / 2;
+                } else {
+                    dw = dims.height * imgRatio;
+                    dx = (dims.width - dw) / 2;
+                }
+
+                context.fillStyle = '#000';
+                context.fillRect(0, 0, dims.width, dims.height);
             }
-        } else if (bg.imageFit === 'contain') {
-            const imgRatio = img.width / img.height;
-            const canvasRatio = dims.width / dims.height;
 
-            if (imgRatio > canvasRatio) {
-                dh = dims.width / imgRatio;
-                dy = (dims.height - dh) / 2;
-            } else {
-                dw = dims.height * imgRatio;
-                dx = (dims.width - dw) / 2;
+            if (bg.imageBlur > 0) {
+                context.filter = `blur(${bg.imageBlur}px)`;
             }
 
-            context.fillStyle = '#000';
-            context.fillRect(0, 0, dims.width, dims.height);
-        }
+            context.drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh);
+            context.filter = 'none';
 
-        if (bg.imageBlur > 0) {
-            context.filter = `blur(${bg.imageBlur}px)`;
-        }
-
-        context.drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh);
-        context.filter = 'none';
-
-        if (bg.overlayOpacity > 0) {
-            context.fillStyle = bg.overlayColor;
-            context.globalAlpha = bg.overlayOpacity / 100;
-            context.fillRect(0, 0, dims.width, dims.height);
-            context.globalAlpha = 1;
+            if (bg.overlayOpacity > 0) {
+                context.fillStyle = bg.overlayColor;
+                context.globalAlpha = bg.overlayOpacity / 100;
+                context.fillRect(0, 0, dims.width, dims.height);
+                context.globalAlpha = 1;
+            }
         }
     }
 }
@@ -5913,52 +6066,126 @@ function drawBackground() {
     } else if (bg.type === 'solid') {
         ctx.fillStyle = bg.solid;
         ctx.fillRect(0, 0, dims.width, dims.height);
-    } else if (bg.type === 'image' && bg.image) {
+    } else if (bg.type === 'image') {
+        // Reconstruct HTMLImageElement from saved data URL if needed
+        if (!bg.image && bg.imageSrc) {
+            const restoredImg = new Image();
+            restoredImg.src = bg.imageSrc;
+            bg.image = restoredImg;
+            restoredImg.onload = () => updateCanvas();
+        }
         const img = bg.image;
-        let sx = 0, sy = 0, sw = img.width, sh = img.height;
-        let dx = 0, dy = 0, dw = dims.width, dh = dims.height;
+        if (img && img.complete && img.naturalWidth > 0) {
+            let sx = 0, sy = 0, sw = img.width, sh = img.height;
+            let dx = 0, dy = 0, dw = dims.width, dh = dims.height;
 
-        if (bg.imageFit === 'cover') {
-            const imgRatio = img.width / img.height;
-            const canvasRatio = dims.width / dims.height;
+            if (bg.imageFit === 'cover') {
+                const imgRatio = img.width / img.height;
+                const canvasRatio = dims.width / dims.height;
 
-            if (imgRatio > canvasRatio) {
-                sw = img.height * canvasRatio;
-                sx = (img.width - sw) / 2;
-            } else {
-                sh = img.width / canvasRatio;
-                sy = (img.height - sh) / 2;
+                if (imgRatio > canvasRatio) {
+                    sw = img.height * canvasRatio;
+                    sx = (img.width - sw) / 2;
+                } else {
+                    sh = img.width / canvasRatio;
+                    sy = (img.height - sh) / 2;
+                }
+            } else if (bg.imageFit === 'contain') {
+                const imgRatio = img.width / img.height;
+                const canvasRatio = dims.width / dims.height;
+
+                if (imgRatio > canvasRatio) {
+                    dh = dims.width / imgRatio;
+                    dy = (dims.height - dh) / 2;
+                } else {
+                    dw = dims.height * imgRatio;
+                    dx = (dims.width - dw) / 2;
+                }
+
+                ctx.fillStyle = '#000';
+                ctx.fillRect(0, 0, dims.width, dims.height);
             }
-        } else if (bg.imageFit === 'contain') {
-            const imgRatio = img.width / img.height;
-            const canvasRatio = dims.width / dims.height;
 
-            if (imgRatio > canvasRatio) {
-                dh = dims.width / imgRatio;
-                dy = (dims.height - dh) / 2;
-            } else {
-                dw = dims.height * imgRatio;
-                dx = (dims.width - dw) / 2;
+            if (bg.imageBlur > 0) {
+                ctx.filter = `blur(${bg.imageBlur}px)`;
             }
 
-            ctx.fillStyle = '#000';
-            ctx.fillRect(0, 0, dims.width, dims.height);
-        }
+            ctx.drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh);
+            ctx.filter = 'none';
 
-        if (bg.imageBlur > 0) {
-            ctx.filter = `blur(${bg.imageBlur}px)`;
+            // Overlay
+            if (bg.overlayOpacity > 0) {
+                ctx.fillStyle = bg.overlayColor;
+                ctx.globalAlpha = bg.overlayOpacity / 100;
+                ctx.fillRect(0, 0, dims.width, dims.height);
+                ctx.globalAlpha = 1;
+            }
         }
+    }
+}
 
-        ctx.drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh);
-        ctx.filter = 'none';
+function drawGlow() {
+    const settings = getScreenshotSettings();
+    const screenshot = state.screenshots[state.selectedIndex];
+    if (!screenshot) return;
+    drawGlowToContext(ctx, getCanvasDimensions(), settings, screenshot);
+}
 
-        // Overlay
-        if (bg.overlayOpacity > 0) {
-            ctx.fillStyle = bg.overlayColor;
-            ctx.globalAlpha = bg.overlayOpacity / 100;
-            ctx.fillRect(0, 0, dims.width, dims.height);
-            ctx.globalAlpha = 1;
-        }
+function drawGlowToContext(context, dims, settings, screenshot) {
+    if (!settings.glow || !settings.glow.enabled) return;
+
+    const img = getScreenshotImage(screenshot);
+    if (!img) return;
+
+    // Merge with defaults to handle screenshots created before glow was added
+    const defaults = state.defaults.screenshot.glow;
+    const glow = {
+        color:     settings.glow.color     ?? defaults.color,
+        intensity: settings.glow.intensity ?? defaults.intensity,
+        radius:    settings.glow.radius    ?? defaults.radius,
+        x:         settings.glow.x        ?? defaults.x,
+        y:         settings.glow.y        ?? defaults.y,
+        scaleX:    settings.glow.scaleX   ?? defaults.scaleX,
+        scaleY:    settings.glow.scaleY   ?? defaults.scaleY,
+    };
+
+    const scale = settings.scale / 100;
+    let imgWidth = dims.width * scale;
+    let imgHeight = (img.height / img.width) * imgWidth;
+    if (imgHeight > dims.height * scale) {
+        imgHeight = dims.height * scale;
+        imgWidth = (img.width / img.height) * imgHeight;
+    }
+
+    const deviceX = (dims.width - imgWidth) * (settings.x / 100);
+    const deviceY = (dims.height - imgHeight) * (settings.y / 100);
+    const deviceCenterX = deviceX + imgWidth / 2;
+    const deviceCenterY = deviceY + imgHeight / 2;
+
+    const glowX = deviceCenterX + (glow.x - 50) / 50 * imgWidth;
+    const glowY = deviceCenterY + (glow.y - 50) / 50 * imgHeight;
+
+    const baseRadius = Math.max(imgWidth, imgHeight) * (glow.radius / 100);
+    const sX = glow.scaleX / 100;
+    const sY = glow.scaleY / 100;
+
+    context.save();
+    try {
+        context.translate(glowX, glowY);
+        context.scale(sX, sY);
+
+        const gradient = context.createRadialGradient(0, 0, 0, 0, 0, baseRadius || 1);
+        const alpha = glow.intensity / 100;
+        gradient.addColorStop(0, hexToRgba(glow.color, alpha));
+        gradient.addColorStop(0.5, hexToRgba(glow.color, alpha * 0.5));
+        gradient.addColorStop(1, hexToRgba(glow.color, 0));
+
+        context.fillStyle = gradient;
+        context.beginPath();
+        context.arc(0, 0, baseRadius || 1, 0, Math.PI * 2);
+        context.fill();
+    } finally {
+        context.restore();
     }
 }
 

@@ -772,6 +772,72 @@
                 </div>
                 </div><!-- end 2d-only-settings -->
 
+                <div class="divider"></div>
+
+                <div class="control-group">
+                    <div class="toggle-row collapsible collapsed" data-target="glow-options">
+                        <span class="toggle-label">
+                            <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <polyline points="6 9 12 15 18 9"/>
+                            </svg>
+                            Glow
+                        </span>
+                        <div class="toggle" id="glow-toggle"></div>
+                    </div>
+                </div>
+
+                <div id="glow-options" style="display: none;">
+                    <div class="control-group">
+                        <label class="control-label">Glow Color</label>
+                        <div class="color-input-wrapper">
+                            <input type="color" id="glow-color" value="#ff8c00">
+                            <input type="text" id="glow-color-hex" value="#ff8c00">
+                        </div>
+                    </div>
+                    <div class="control-group">
+                        <label class="control-label">Intensity</label>
+                        <div class="control-row">
+                            <input type="range" id="glow-intensity" min="0" max="100" value="50">
+                            <span class="range-value" id="glow-intensity-value">50%</span>
+                        </div>
+                    </div>
+                    <div class="control-group">
+                        <label class="control-label">Radius</label>
+                        <div class="control-row">
+                            <input type="range" id="glow-radius" min="5" max="200" value="50">
+                            <span class="range-value" id="glow-radius-value">50%</span>
+                        </div>
+                    </div>
+                    <div class="control-group">
+                        <label class="control-label">Position X</label>
+                        <div class="control-row">
+                            <input type="range" id="glow-x" min="0" max="100" value="50">
+                            <span class="range-value" id="glow-x-value">50%</span>
+                        </div>
+                    </div>
+                    <div class="control-group">
+                        <label class="control-label">Position Y</label>
+                        <div class="control-row">
+                            <input type="range" id="glow-y" min="0" max="100" value="50">
+                            <span class="range-value" id="glow-y-value">50%</span>
+                        </div>
+                    </div>
+                    <div class="control-group">
+                        <label class="control-label">Spread X</label>
+                        <div class="control-row">
+                            <input type="range" id="glow-scale-x" min="10" max="300" value="100">
+                            <span class="range-value" id="glow-scale-x-value">100%</span>
+                        </div>
+                    </div>
+                    <div class="control-group">
+                        <label class="control-label">Spread Y</label>
+                        <div class="control-row">
+                            <input type="range" id="glow-scale-y" min="10" max="300" value="100">
+                            <span class="range-value" id="glow-scale-y-value">100%</span>
+                        </div>
+                    </div>
+                </div>
+
                 <div id="3d-tip" class="tip-box" style="display: none;">
                     <img src="img/info.svg" width="16" height="16" alt="Info">
                     <div class="tip-content">
