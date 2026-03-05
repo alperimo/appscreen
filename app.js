@@ -5712,11 +5712,12 @@ function renderScreenshotToCanvas(index, targetCanvas, targetCtx, dims, previewS
         drawNoiseToContext(targetCtx, dims, bg.noiseIntensity);
     }
 
+    // Draw screenshot - collage, 3D, or 2D
+    const settings = screenshot.screenshot;
+
     // Draw glow behind device
     drawGlowToContext(targetCtx, dims, settings, screenshot);
 
-    // Draw screenshot - collage, 3D, or 2D
-    const settings = screenshot.screenshot;
     const isCollage = settings.collage?.enabled && settings.collage.devices.length > 0;
 
     if (isCollage) {
